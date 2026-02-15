@@ -10,6 +10,8 @@ import { ShieldCheck, TrendingUp, AlertTriangle } from "lucide-react"
 export default function DashboardPage() {
   const [auraScore, setAuraScore] = useState<number>(0)
   const [username, setUsername] = useState<string | null>(null)
+  const [mounted, setMounted] = useState(false)
+
 
 
   useEffect(() => {
@@ -38,6 +40,7 @@ export default function DashboardPage() {
   }
 
   loadProfile()
+  setMounted(true)
 }, [])
 
 
@@ -50,14 +53,17 @@ export default function DashboardPage() {
   return (
     <div className="space-y-8">
       
-      <div>
-        <h2 className="text-3xl font-semibold text-cyan-400">
-          Security Dashboard
-        </h2>
-        <p className="text-slate-400 mt-1">
-          Real-time trust & transaction monitoring
-        </p>
-      </div>
+      {mounted && (
+        <div>
+          <h2 className="text-3xl font-semibold text-cyan-400">
+            Hello, {username || "User"} 👋
+          </h2>
+          <p className="text-slate-400 mt-1">
+            Welcome to your GuardPay.
+          </p>
+        </div>
+      )}
+
 
       <Card className="bg-slate-900/60 border-slate-800 backdrop-blur-md">
         <CardHeader>

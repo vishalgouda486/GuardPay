@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import { useRouter } from "next/navigation"
 import api from "@/lib/api"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -9,40 +9,39 @@ import { Button } from "@/components/ui/button"
 import { ShieldCheck } from "lucide-react"
 import { toast } from "sonner"
 
-export default function LoginPage() {
+export default function SignupPage() {
   const router = useRouter()
 
   const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
+  const [confirmPassword, setConfirmPassword] = useState("")
   const [loading, setLoading] = useState(false)
 
-  // 🔹 Clear any stale session when login page loads
-  useEffect(() => {
-    localStorage.removeItem("guardpay_user")
-  }, [])
+  const handleSignup = async () => {
+    if (!username || !password || !confirmPassword) {
+      toast.error("All fields are required")
+      return
+    }
 
-  const handleLogin = async () => {
-    if (!username || !password) {
-      toast.error("Please enter username and password")
+    if (password !== confirmPassword) {
+      toast.error("Passwords do not match")
       return
     }
 
     try {
       setLoading(true)
 
-      const res = await api.post("/login", {
+      await api.post("/signup", {
         username,
         password,
       })
 
-      // Save user only after successful login
-      localStorage.setItem("guardpay_user", username)
+      toast.success("Account created successfully!")
 
-      toast.success("Login successful!")
-
-      router.push("/") // dashboard lives at root in your structure
+      // Redirect to login after successful signup
+      router.push("/auth/login")
     } catch (error: any) {
-      toast.error(error.response?.data?.detail || "Invalid credentials")
+      toast.error(error.response?.data?.detail || "Signup failed")
     } finally {
       setLoading(false)
     }
@@ -54,7 +53,7 @@ export default function LoginPage() {
         <CardHeader className="text-center space-y-2">
           <ShieldCheck className="mx-auto text-cyan-400" size={32} />
           <CardTitle className="text-2xl text-cyan-400">
-            GuardPay Login
+            Create GuardPay Account
           </CardTitle>
         </CardHeader>
 
@@ -72,21 +71,27 @@ export default function LoginPage() {
             onChange={(e) => setPassword(e.target.value)}
           />
 
+          <Input
+            type="password"
+            placeholder="Confirm Password"
+            value={confirmPassword}
+            onChange={(e) => setConfirmPassword(e.target.value)}
+          />
+
           <Button
             className="w-full bg-cyan-600 hover:bg-cyan-500"
-            onClick={handleLogin}
+            onClick={handleSignup}
             disabled={loading}
           >
-            {loading ? "Authenticating..." : "Login"}
+            {loading ? "Creating Account..." : "Sign Up"}
           </Button>
 
-          {/* 🔹 Signup Button */}
           <Button
             variant="outline"
             className="w-full"
-            onClick={() => router.push("/auth/signup")}
+            onClick={() => router.push("/auth/login")}
           >
-            Create an Account
+            Already have an account? Login
           </Button>
         </CardContent>
       </Card>

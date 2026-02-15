@@ -16,6 +16,7 @@ const navItems = [
   { name: "Ghost Cards", icon: CreditCard, href: "/ghost-cards" },
   { name: "Escrow", icon: Lock, href: "/escrow" },
   { name: "Admin", icon: Shield, href: "/admin" },
+  { name: "Transaction History", icon: Settings, href: "/history" },
 ]
 
 export default function Sidebar() {

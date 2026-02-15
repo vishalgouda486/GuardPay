@@ -1,14 +1,15 @@
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Header
 from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel
 import secrets
 import random
 import enum
 import time
+import json
 from sqlalchemy.ext.declarative import declarative_base
 from passlib.context import CryptContext
-from sqlalchemy import Column, String, Float, Integer, create_engine, func, Enum, DateTime
+from sqlalchemy import Column, String, Float, Integer, create_engine, func, Enum, DateTime, Text
 from sqlalchemy.orm import sessionmaker, Session
 
 # RISK WEIGHTS (0 to 100)
@@ -96,6 +97,14 @@ class ScamListDB(Base):
     reason = Column(String, default="Reported Fraud")
     added_on = Column(String)
 
+class IdempotencyLogDB(Base):
+    __tablename__ = "idempotency_logs"
+
+    id = Column(String, primary_key=True, index=True)
+    idempotency_key = Column(String, unique=True, index=True)
+    endpoint = Column(String)
+    response_body = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 # 3. Create the table in the file
 Base.metadata.create_all(bind=engine)
@@ -112,6 +121,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def handle_idempotency(db, idempotency_key: str, endpoint: str):
+    if not idempotency_key:
+        raise HTTPException(status_code=400, detail="Idempotency-Key header required")
+
+    existing = db.query(IdempotencyLogDB).filter(
+        IdempotencyLogDB.idempotency_key == idempotency_key
+    ).first()
+
+    if existing:
+        return json.loads(existing.response_body)
+
+    return None
+
+
+def store_idempotent_response(db, idempotency_key: str, endpoint: str, response_data: dict):
+    log = IdempotencyLogDB(
+        id=idempotency_key,
+        idempotency_key=idempotency_key,
+        endpoint=endpoint,
+        response_body=json.dumps(response_data)
+    )
+
+    db.add(log)
+    db.commit()
 
 def update_user_fingerprint(username: str, db: Session):
     # 1. Fetch all successful transactions for this user
@@ -158,7 +191,6 @@ class TransferRequest(BaseModel):
     sender_username: str
     recipient_upi: str
     amount: float
-    idempotency_key: str
 
 class CardRequest(BaseModel):
     username: str
@@ -197,20 +229,14 @@ def signup(user: UserCreate, db: Session = Depends(get_db)):
     return {"message": f"User {user.username} created successfully!"}
 
 @app.post("/safe-transfer")
-def perform_transfer(request: TransferRequest, db: Session = Depends(get_db)):
+def perform_transfer(request: TransferRequest, idempotency_key: str = Header(None, alias="Idempotency-Key"), db: Session = Depends(get_db)):
     start_time = time.time()  # Start Latency Measurement
     
     # --- 1. IDEMPOTENCY CHECK ---
-    duplicate = db.query(TransactionLogDB).filter(
-        TransactionLogDB.idempotency_key == request.idempotency_key
-    ).first()
-    
+    duplicate = handle_idempotency(db, idempotency_key, "/safe-transfer")
     if duplicate:
-        return {
-            "status": "DUPLICATE",
-            "message": "Transaction already processed.",
-            "original_state": duplicate.state
-        }
+        return duplicate
+
 
     # --- 2. FETCH SENDER ---
     sender = db.query(UserDB).filter(UserDB.username == request.sender_username).first()
@@ -234,7 +260,7 @@ def perform_transfer(request: TransferRequest, db: Session = Depends(get_db)):
 
     def save_final_log(state, log_type, msg_type="PAYMENT"):
         log = TransactionLogDB(
-            idempotency_key=request.idempotency_key,
+            idempotency_key=idempotency_key,
             username=request.sender_username,
             recipient=request.recipient_upi,
             amount=request.amount,
@@ -356,7 +382,7 @@ def perform_transfer(request: TransferRequest, db: Session = Depends(get_db)):
         db.commit()
         save_final_log(TransactionState.BLOCKED, "RISK_ENGINE_BLOCK")
         
-        return {
+        response_data = {
             "status": "DENIED",
             "risk_score": final_risk_score,
             "applied_threshold": current_threshold,
@@ -364,6 +390,16 @@ def perform_transfer(request: TransferRequest, db: Session = Depends(get_db)):
             "latency_ms": latency_ms,
             "message": "Transaction blocked due to high risk profile."
         }
+
+        store_idempotent_response(
+            db,
+            idempotency_key,
+            "/safe-transfer",
+            response_data
+        )
+
+        return response_data
+
 
     # --- 7. SUCCESS LOGIC & REWARD ---
     sender.safe_transaction_count += 1
@@ -391,7 +427,7 @@ def perform_transfer(request: TransferRequest, db: Session = Depends(get_db)):
     # Update the user's behavioral fingerprint baseline for the next transaction
     update_user_fingerprint(request.sender_username, db)
 
-    return {
+    response_data = {
         "status": "SUCCESS", 
         "risk_score": final_risk_score,
         "applied_threshold": current_threshold,
@@ -401,14 +437,34 @@ def perform_transfer(request: TransferRequest, db: Session = Depends(get_db)):
         "current_aura": sender.aura_score
     }
 
+    store_idempotent_response(
+        db,
+        idempotency_key,
+        "/safe-transfer",
+        response_data
+    )
+
+    return response_data
+
+
 @app.post("/generate-ghost-card")
-def generate_card(request: CardRequest, db: Session = Depends(get_db)):
+def generate_card(
+    request: CardRequest,
+    idempotency_key: str = Header(None, alias="Idempotency-Key"),
+    db: Session = Depends(get_db)
+):
+    # --- IDEMPOTENCY CHECK ---
+    duplicate = handle_idempotency(db, idempotency_key, "/generate-ghost-card")
+    if duplicate:
+        return duplicate
+
     # Verify the user actually exists before making a card for them
     user = db.query(UserDB).filter(UserDB.username == request.username).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found. Please signup first.")
 
     card_id = f"ghost_{secrets.token_hex(3)}"
+
     new_card = GhostCardDB(
         card_id=card_id,
         card_number="4" + "".join([str(random.randint(0, 9)) for _ in range(15)]),
@@ -416,38 +472,123 @@ def generate_card(request: CardRequest, db: Session = Depends(get_db)):
         label=request.label,
         amount_limit=request.amount_limit,
         status="Active",
-        owner=request.username # <--- SAVE THE OWNER HERE
+        owner=request.username
     )
-    
+
     db.add(new_card)
     db.commit()
     db.refresh(new_card)
-    
-    return {"status": "CREATED", "owner": new_card.owner, "details": new_card}
+
+    response_data = {
+        "status": "CREATED",
+        "owner": new_card.owner,
+        "details": {
+            "card_id": new_card.card_id,
+            "card_number": new_card.card_number,
+            "cvv": new_card.cvv,
+            "label": new_card.label,
+            "amount_limit": new_card.amount_limit,
+            "status": new_card.status
+        }
+    }
+
+    # --- STORE IDEMPOTENT RESPONSE ---
+    store_idempotent_response(
+        db,
+        idempotency_key,
+        "/generate-ghost-card",
+        response_data
+    )
+
+    return response_data
+
 
 @app.post("/simulate-merchant-payment")
-def pay_with_ghost_card(request: SpendRequest, db: Session = Depends(get_db)):
-    # 1. Search the database for the card
+def pay_with_ghost_card(
+    request: SpendRequest,
+    idempotency_key: str = Header(None, alias="Idempotency-Key"),
+    db: Session = Depends(get_db)
+):
+    duplicate = handle_idempotency(db, idempotency_key, "/simulate-merchant-payment")
+    if duplicate:
+        return duplicate
+
     card = db.query(GhostCardDB).filter(GhostCardDB.card_id == request.card_id).first()
     
     if not card:
         raise HTTPException(status_code=404, detail="Ghost Card not found")
     
     if card.status == "Destroyed":
-        return {"status": "DECLINED", "reason": "Card already self-destructed."}
+        response_data = {"status": "DECLINED", "reason": "Card already self-destructed."}
+        
+        # 🔹 AUDIT LOG (BLOCKED)
+        log = TransactionLogDB(
+            idempotency_key=idempotency_key,
+            username=card.owner,
+            recipient="MERCHANT",
+            amount=request.amount,
+            type="GHOST_PAYMENT",
+            state=TransactionState.BLOCKED,
+            timestamp=datetime.now(timezone.utc)
+        )
+        db.add(log)
+        db.commit()
+
+        store_idempotent_response(db, idempotency_key, "/simulate-merchant-payment", response_data)
+        return response_data
     
     if request.amount > card.amount_limit:
-        return {"status": "DECLINED", "reason": "Limit exceeded."}
+        response_data = {"status": "DECLINED", "reason": "Limit exceeded."}
+        
+         # 🔹 AUDIT LOG (BLOCKED)
+        log = TransactionLogDB(
+            idempotency_key=idempotency_key,
+            username=card.owner,
+            recipient="MERCHANT",
+            amount=request.amount,
+            type="GHOST_PAYMENT",
+            state=TransactionState.BLOCKED,
+            timestamp=datetime.now(timezone.utc)
+        )
+        db.add(log)
+        db.commit()
+        
+        store_idempotent_response(db, idempotency_key, "/simulate-merchant-payment", response_data)
+        return response_data
     
-    # 2. Update status and save
     card.status = "Destroyed"
     db.commit()
+
+    response_data = {"status": "SUCCESS", "message": "Payment done and card destroyed."}
     
-    return {"status": "SUCCESS", "message": "Payment done and card destroyed."}
+     # 🔹 AUDIT LOG (APPROVED)
+    log = TransactionLogDB(
+        idempotency_key=idempotency_key,
+        username=card.owner,
+        recipient="MERCHANT",
+        amount=request.amount,
+        type="GHOST_PAYMENT",
+        state=TransactionState.APPROVED,
+        timestamp=datetime.now(timezone.utc)
+    )
+    db.add(log)
+    db.commit()
+    
+    store_idempotent_response(db, idempotency_key, "/simulate-merchant-payment", response_data)
+
+    return response_data
+
 
 @app.post("/create-escrow-payment")
-def create_escrow(request: EscrowRequest, db: Session = Depends(get_db)):
-    # Verify the sender exists
+def create_escrow(
+    request: EscrowRequest,
+    idempotency_key: str = Header(None, alias="Idempotency-Key"),
+    db: Session = Depends(get_db)
+):
+    duplicate = handle_idempotency(db, idempotency_key, "/create-escrow-payment")
+    if duplicate:
+        return duplicate
+
     sender = db.query(UserDB).filter(UserDB.username == request.sender_id).first()
     if not sender:
         raise HTTPException(status_code=404, detail="Sender not found")
@@ -456,7 +597,7 @@ def create_escrow(request: EscrowRequest, db: Session = Depends(get_db)):
     
     new_escrow = EscrowDB(
         escrow_id=escrow_id,
-        sender_id=request.sender_id, # <--- SAVE SENDER
+        sender_id=request.sender_id,
         receiver_id=request.receiver_id,
         amount=request.amount,
         status="LOCKED"
@@ -465,8 +606,35 @@ def create_escrow(request: EscrowRequest, db: Session = Depends(get_db)):
     db.add(new_escrow)
     db.commit()
     db.refresh(new_escrow)
-    
-    return {"status": "ESCROW_LOCKED", "escrow_id": escrow_id, "details": new_escrow}
+
+    # --- AUDIT LOG ---
+    log = TransactionLogDB(
+        idempotency_key=idempotency_key,
+        username=request.sender_id,
+        recipient=request.receiver_id,
+        amount=request.amount,
+        type="ESCROW",
+        state=TransactionState.APPROVED,
+        timestamp=datetime.now(timezone.utc)
+    )
+    db.add(log)
+    db.commit()
+
+
+    response_data = {
+        "status": "ESCROW_LOCKED",
+        "escrow_id": escrow_id
+    }
+
+    store_idempotent_response(
+        db,
+        idempotency_key,
+        "/create-escrow-payment",
+        response_data
+    )
+
+    return response_data
+
 
 @app.get("/admin/dashboard")
 def get_admin_stats(db: Session = Depends(get_db)):
@@ -500,7 +668,16 @@ def status():
 
 
 @app.post("/release-escrow")
-def release_funds(escrow_id: str, db: Session = Depends(get_db)):
+def release_funds(
+    escrow_id: str,
+    idempotency_key: str = Header(None, alias="Idempotency-Key"),
+    db: Session = Depends(get_db)
+):
+    # --- IDEMPOTENCY CHECK ---
+    duplicate = handle_idempotency(db, idempotency_key, "/release-escrow")
+    if duplicate:
+        return duplicate
+
     # 1. Find the escrow record
     escrow = db.query(EscrowDB).filter(EscrowDB.escrow_id == escrow_id).first()
     
@@ -508,7 +685,14 @@ def release_funds(escrow_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Escrow record not found")
     
     if escrow.status == "RELEASED":
-        return {"error": "Funds already released."}
+        response_data = {"error": "Funds already released."}
+        store_idempotent_response(
+            db,
+            idempotency_key,
+            "/release-escrow",
+            response_data
+        )
+        return response_data
     
     # 2. Complete the transaction
     escrow.status = "RELEASED"
@@ -525,11 +709,36 @@ def release_funds(escrow_id: str, db: Session = Depends(get_db)):
             
     db.commit()
     
-    return {
+    # --- AUDIT LOG ---
+    log = TransactionLogDB(
+        idempotency_key=idempotency_key,
+        username=escrow.sender_id,
+        recipient=escrow.receiver_id,
+        amount=escrow.amount,
+        type="ESCROW",
+        state=TransactionState.APPROVED,
+        timestamp=datetime.now(timezone.utc)
+    )
+    db.add(log)
+    db.commit()
+
+
+    response_data = {
         "status": "SUCCESS",
         "message": f"Payment released to {escrow.receiver_id}. Sender Aura boosted!",
         "new_aura_score": sender.aura_score if sender else "N/A"
     }
+
+    # --- STORE IDEMPOTENT RESPONSE ---
+    store_idempotent_response(
+        db,
+        idempotency_key,
+        "/release-escrow",
+        response_data
+    )
+
+    return response_data
+
 
 @app.get("/check-incoming-escrow/{escrow_id}")
 def check_escrow_status(escrow_id: str, db: Session = Depends(get_db)):
@@ -638,7 +847,17 @@ def get_sent_escrows(username: str, db: Session = Depends(get_db)):
     }
 
 @app.post("/request-escrow-refund")
-def request_refund(escrow_id: str, username: str, db: Session = Depends(get_db)):
+def request_refund(
+    escrow_id: str,
+    username: str,
+    idempotency_key: str = Header(None, alias="Idempotency-Key"),
+    db: Session = Depends(get_db)
+):
+    # --- IDEMPOTENCY CHECK ---
+    duplicate = handle_idempotency(db, idempotency_key, "/request-escrow-refund")
+    if duplicate:
+        return duplicate
+
     escrow = db.query(EscrowDB).filter(EscrowDB.escrow_id == escrow_id).first()
     
     if not escrow:
@@ -649,17 +868,49 @@ def request_refund(escrow_id: str, username: str, db: Session = Depends(get_db))
         raise HTTPException(status_code=403, detail="Permission denied: You are not the sender")
     
     if escrow.status != "LOCKED":
-        return {"error": f"Cannot refund. Current status is {escrow.status}"}
+        response_data = {"error": f"Cannot refund. Current status is {escrow.status}"}
+        store_idempotent_response(
+            db,
+            idempotency_key,
+            "/request-escrow-refund",
+            response_data
+        )
+        return response_data
     
     # Update status to REFUNDED
     escrow.status = "REFUNDED"
     db.commit()
     
-    return {
+    # --- AUDIT LOG ---
+    log = TransactionLogDB(
+        idempotency_key=idempotency_key,
+        username=username,
+        recipient=escrow.receiver_id,
+        amount=escrow.amount,
+        type="ESCROW",
+        state=TransactionState.APPROVED,
+        timestamp=datetime.now(timezone.utc)
+    )
+    db.add(log)
+    db.commit()
+
+
+    response_data = {
         "status": "SUCCESS",
         "message": f"₹{escrow.amount} has been refunded to {username}.",
         "new_status": "REFUNDED"
     }
+
+    # --- STORE IDEMPOTENT RESPONSE ---
+    store_idempotent_response(
+        db,
+        idempotency_key,
+        "/request-escrow-refund",
+        response_data
+    )
+
+    return response_data
+
 
 @app.get("/my-incoming-escrows/{username}")
 def get_incoming_escrows(username: str, db: Session = Depends(get_db)):
@@ -727,4 +978,28 @@ def get_global_stats(db: Session = Depends(get_db)):
             "active_blacklist_entries": db.query(ScamListDB).count()
         },
         "status": "All Systems Operational"
+    }
+
+@app.get("/transaction-history/{username}")
+def get_transaction_history(username: str, db: Session = Depends(get_db)):
+    logs = db.query(TransactionLogDB).filter(
+        TransactionLogDB.username == username
+    ).order_by(TransactionLogDB.timestamp.desc()).all()
+
+    history = []
+
+    for log in logs:
+        history.append({
+            "idempotency_key": log.idempotency_key,
+            "recipient": log.recipient,
+            "amount": log.amount,
+            "type": log.type,
+            "state": log.state,
+            "timestamp": log.timestamp
+        })
+
+    return {
+        "username": username,
+        "total_transactions": len(history),
+        "transactions": history
     }
