@@ -3,6 +3,7 @@ from fastapi import FastAPI, HTTPException, Depends, Header
 from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel
 import secrets
+import os
 import random
 import enum
 import time
@@ -33,8 +34,12 @@ WEIGHT_ANOMALY = 25              # Risk points for unusual spending
 ANOMALY_THRESHOLD_MULTIPLIER = 3 # If amount > 3x the average, it's an anomaly
 
 # 1. Setup the Database File
-DATABASE_URL = "sqlite:///./guard_pay.db"
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+DATABASE_URL = os.getenv("DATABASE_URL")
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True
+)
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
