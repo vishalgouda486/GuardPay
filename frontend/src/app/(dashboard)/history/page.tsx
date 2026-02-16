@@ -11,6 +11,7 @@ interface Transaction {
   amount: number
   type: string
   state: string
+  direction: string
   timestamp: string
 }
 
@@ -62,15 +63,27 @@ export default function HistoryPage() {
           <CardHeader>
             <CardTitle className="flex justify-between">
               <span>{tx.type}</span>
-              <Badge
-                className={
-                  tx.state === "APPROVED"
-                    ? "bg-emerald-600"
-                    : "bg-red-600"
-                }
-              >
-                {tx.state}
-              </Badge>
+              <div className="flex gap-2">
+                <Badge
+                  className={
+                    tx.direction === "RECEIVED"
+                      ? "bg-emerald-600"
+                      : "bg-red-600"
+                  }
+                >
+                  {tx.direction}
+                </Badge>
+
+                <Badge
+                  className={
+                    tx.state === "APPROVED"
+                      ? "bg-cyan-600"
+                      : "bg-orange-600"
+                  }
+                >
+                  {tx.state}
+                </Badge>
+              </div>
             </CardTitle>
           </CardHeader>
 

@@ -985,21 +985,30 @@ def get_global_stats(db: Session = Depends(get_db)):
         "status": "All Systems Operational"
     }
 
+from sqlalchemy import or_
+
 @app.get("/transaction-history/{username}")
 def get_transaction_history(username: str, db: Session = Depends(get_db)):
+
     logs = db.query(TransactionLogDB).filter(
-        TransactionLogDB.username == username
+        or_(
+            TransactionLogDB.username == username,      # Sent
+            TransactionLogDB.recipient == username     # Received
+        )
     ).order_by(TransactionLogDB.timestamp.desc()).all()
 
     history = []
 
     for log in logs:
+        direction = "SENT" if log.username == username else "RECEIVED"
+
         history.append({
             "idempotency_key": log.idempotency_key,
             "recipient": log.recipient,
             "amount": log.amount,
             "type": log.type,
             "state": log.state,
+            "direction": direction,   # 🔹 New field
             "timestamp": log.timestamp
         })
 
