@@ -393,7 +393,7 @@ def perform_transfer(request: TransferRequest, idempotency_key: str = Header(Non
         save_final_log(TransactionState.BLOCKED, "RISK_ENGINE_BLOCK")
         
         response_data = {
-            "status": "DENIED",
+            "status": "BLOCKED",
             "risk_score": final_risk_score,
             "applied_threshold": current_threshold,
             "risk_factors": risk_factors,
@@ -966,7 +966,7 @@ def get_global_stats(db: Session = Depends(get_db)):
     
     # 2. Total Scams Prevented (Counting DENIED logs)
     total_scams_blocked = db.query(TransactionLogDB).filter(
-        TransactionLogDB.state == "DENIED"
+        TransactionLogDB.state == "TransactionState.BLOCKED"
     ).count()
     
     # 3. Total Money Protected (Sum of SUCCESS transactions)
