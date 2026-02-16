@@ -966,7 +966,7 @@ def get_global_stats(db: Session = Depends(get_db)):
     
     # 2. Total Scams Prevented (Counting DENIED logs)
     total_scams_blocked = db.query(TransactionLogDB).filter(
-        TransactionLogDB.state == "TransactionState.BLOCKED"
+        TransactionLogDB.state == TransactionState.BLOCKED
     ).count()
     
     # 3. Total Money Protected (Sum of SUCCESS transactions)
