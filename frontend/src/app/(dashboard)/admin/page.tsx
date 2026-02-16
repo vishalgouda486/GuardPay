@@ -12,6 +12,10 @@ import { useEffect, useState } from "react"
 import api from "@/lib/api"
 import { Card, CardContent } from "@/components/ui/card"
 import { Users, ShieldAlert, TrendingUp, Activity, Ban } from "lucide-react"
+import { Input } from "@/components/ui/input"
+import { Button } from "@/components/ui/button"
+import { toast } from "sonner"
+
 
 interface Metrics {
   total_registered_users: number
@@ -23,6 +27,36 @@ interface Metrics {
 
 export default function AdminPage() {
   const [metrics, setMetrics] = useState<Metrics | null>(null)
+  const [upiId, setUpiId] = useState("")
+  const [reason, setReason] = useState("")
+
+  const handleBlockId = async () => {
+    if (!upiId || !reason) {
+      toast.error("Enter UPI ID and reason")
+      return
+    }
+
+    try {
+      await api.post("/admin/block-id", null, {
+        params: {
+          upi_id: upiId,
+          reason: reason,
+        },
+      })
+
+      toast.success("UPI ID Blacklisted Successfully")
+
+      setUpiId("")
+      setReason("")
+
+      const res = await api.get("/admin/global-stats")
+      setMetrics(res.data.metrics)
+
+    } catch (error) {
+      toast.error("Failed to blacklist ID")
+    }
+  }
+
 
   useEffect(() => {
     const fetchStats = async () => {
@@ -150,6 +184,34 @@ export default function AdminPage() {
             </BarChart>
         </ResponsiveContainer>
     </div>
+
+    <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-6 space-y-4">
+      <h3 className="text-lg font-semibold text-slate-200">
+        Blacklist Control
+      </h3>
+
+      <div className="grid md:grid-cols-3 gap-4">
+        <Input
+          placeholder="Enter UPI ID to block"
+          value={upiId}
+          onChange={(e) => setUpiId(e.target.value)}
+        />
+
+        <Input
+          placeholder="Reason"
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+        />
+
+        <Button
+          className="bg-red-600 hover:bg-red-500"
+          onClick={handleBlockId}
+        >
+          Block ID
+        </Button>
+      </div>
+    </div>
+
 
     </div>
   )

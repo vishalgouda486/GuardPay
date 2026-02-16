@@ -51,6 +51,7 @@ class UserDB(Base):
     warning_count = Column(Integer, default=0)
     safe_transaction_count = Column(Integer, default=0)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    is_blocked = Column(Boolean, default=False)
     # --- BEHAVIORAL FINGERPRINT FIELDS ---
     avg_tx_amount = Column(Float, default=0.0)
     std_dev_amount = Column(Float, default=0.0)
@@ -247,6 +248,10 @@ def perform_transfer(request: TransferRequest, idempotency_key: str = Header(Non
     sender = db.query(UserDB).filter(UserDB.username == request.sender_username).first()
     if not sender:
         raise HTTPException(status_code=404, detail="User not found")
+
+    if sender.is_blocked:
+        raise HTTPException(status_code=403, detail="Your account is blocked by admin.")
+
 
     # --- COOLING-OFF POLICY (New User Safeguard) ---
     account_creation = sender.created_at.replace(tzinfo=timezone.utc)
@@ -1017,3 +1022,30 @@ def get_transaction_history(username: str, db: Session = Depends(get_db)):
         "total_transactions": len(history),
         "transactions": history
     }
+
+@app.get("/admin/users")
+def get_all_users(db: Session = Depends(get_db)):
+    users = db.query(UserDB).all()
+    return users
+
+@app.post("/admin/block-user")
+def block_user(username: str, db: Session = Depends(get_db)):
+    user = db.query(UserDB).filter(UserDB.username == username).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.is_blocked = True
+    db.commit()
+
+    return {"status": "USER_BLOCKED", "username": username}
+
+@app.post("/admin/unblock-user")
+def unblock_user(username: str, db: Session = Depends(get_db)):
+    user = db.query(UserDB).filter(UserDB.username == username).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.is_blocked = False
+    db.commit()
+
+    return {"status": "USER_UNBLOCKED", "username": username}
