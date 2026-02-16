@@ -10,7 +10,7 @@ import time
 import json
 from sqlalchemy.ext.declarative import declarative_base
 from passlib.context import CryptContext
-from sqlalchemy import Column, String, Float, Integer, create_engine, func, Enum, DateTime, Text
+from sqlalchemy import Column, String, Float, Integer, create_engine, func, Enum, DateTime, Text, Boolean
 from sqlalchemy.orm import sessionmaker, Session
 
 # RISK WEIGHTS (0 to 100)
