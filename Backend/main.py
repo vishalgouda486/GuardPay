@@ -10,7 +10,7 @@ import time
 import json
 from sqlalchemy.ext.declarative import declarative_base
 from passlib.context import CryptContext
-from sqlalchemy import Column, String, Float, Integer, create_engine, func, Enum, DateTime, Text, Boolean
+from sqlalchemy import Column, String, Float, Integer, create_engine, func, Enum, DateTime, Text, Boolean, or_
 from sqlalchemy.orm import sessionmaker, Session
 
 # RISK WEIGHTS (0 to 100)
@@ -119,12 +119,18 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 app = FastAPI()
 
+origins = [
+    "https://guard-pay-red.vercel.app",
+    "http://localhost:3000",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins, # Use the list instead of "*"
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"], # Explicitly expose headers
 )
 
 def handle_idempotency(db, idempotency_key: str, endpoint: str):
@@ -972,7 +978,7 @@ def get_global_stats(db: Session = Depends(get_db)):
     # 3. Total Money Protected (Sum of SUCCESS transactions)
     # Using .scalar() to get the actual number from the Sum function
     total_volume = db.query(func.sum(TransactionLogDB.amount)).filter(
-        TransactionLogDB.state == "SUCCESS"
+        TransactionLogDB.state == TransactionState.APPROVED
     ).scalar() or 0.0
     
     # 4. Reputation Health (Average Aura Score)
@@ -989,8 +995,6 @@ def get_global_stats(db: Session = Depends(get_db)):
         },
         "status": "All Systems Operational"
     }
-
-from sqlalchemy import or_
 
 @app.get("/transaction-history/{username}")
 def get_transaction_history(username: str, db: Session = Depends(get_db)):
